@@ -10,7 +10,7 @@ import re
 from datetime import datetime, timedelta, time
 
 # 設定頁面寬度
-st.set_page_config(layout="wide", page_title="熊德盃賽事規劃系統 v4.5")
+st.set_page_config(layout="wide", page_title="熊德盃賽事規劃系統 v4.6")
 
 # --- CSS 優化 ---
 st.markdown("""
@@ -52,37 +52,240 @@ def get_group_color_hex(level_name, all_levels):
     except:
         return '#FFFFFF'
 
-# --- 核心功能：強制渲染 Mermaid 樹狀圖 (直角+無箭頭版) ---
-def render_mermaid(code):
-    html_code = f"""
-    <!DOCTYPE html>
-    <html>
-    <body>
-        <div class="mermaid">
-            {code}
-        </div>
-        <script type="module">
-            import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
-            mermaid.initialize({{ 
-                startOnLoad: true,
-                flowchart: {{ 
-                    curve: 'stepAfter', 
-                    padding: 20,
-                    nodeSpacing: 50,
-                    rankSpacing: 50
-                }},
-                theme: 'base',
-                themeVariables: {{
-                    lineColor: '#000000',
-                    mainBkg: '#FFF9C4',
-                    edgeLabelBackground: '#ffffff'
-                }}
-            }});
-        </script>
-    </body>
-    </html>
+# --- 核心功能：HTML/CSS 手繪樹狀圖 (直角無箭頭) ---
+def render_custom_bracket(final_match, sub_matches, title, icon):
     """
-    components.html(html_code, height=600, scrolling=True)
+    使用 CSS Flexbox 繪製標準的 1對2 樹狀圖
+    """
+    # 準備資料
+    if not final_match:
+        return f"<div style='padding:20px;'>尚無 {title} 資料</div>"
+        
+    top_node_html = f"""
+    <div class="match-box final-box">
+        <div class="match-no">Match No.{final_match['match_no']} {icon}</div>
+        <div class="match-desc">{final_match['desc']}</div>
+        <div class="match-teams">{final_match['team_a']} <br>vs<br> {final_match['team_b']}</div>
+    </div>
+    """
+    
+    bottom_nodes_html = ""
+    # 如果有下層比賽 (來源比賽)，且數量為 2 (剛好畫成樹狀)
+    # 如果數量不夠，就用 placeholder 補
+    children = sub_matches[:2]
+    
+    # 確保有兩個子節點位置，為了排版對稱
+    if len(children) == 0:
+        # 如果沒有下層比賽 (例如季軍賽通常沒有直接的前置賽事編號，是輸的過來)，顯示「敗方」資訊
+        bottom_nodes_html = f"""
+        <div class="child-wrapper">
+            <div class="match-box sub-box placeholder">
+                4強賽 敗方1
+            </div>
+        </div>
+        <div class="child-wrapper">
+            <div class="match-box sub-box placeholder">
+                4強賽 敗方2
+            </div>
+        </div>
+        """
+    elif len(children) == 1:
+         # 只有一場? 雖然罕見但防呆
+         m = children[0]
+         bottom_nodes_html = f"""
+        <div class="child-wrapper">
+            <div class="match-box sub-box">
+                <div class="match-no">No.{m['match_no']}</div>
+                <div class="match-desc">{m['desc']}</div>
+                <div class="match-teams">{m['team_a']} vs {m['team_b']}</div>
+            </div>
+        </div>
+        <div class="child-wrapper"></div>
+        """
+    else:
+        # 正常兩場
+        for m in children:
+            bottom_nodes_html += f"""
+            <div class="child-wrapper">
+                <div class="match-box sub-box">
+                    <div class="match-no">No.{m['match_no']}</div>
+                    <div class="match-desc">{m['desc']}</div>
+                    <div class="match-teams">{m['team_a']} <br>vs<br> {m['team_b']}</div>
+                </div>
+            </div>
+            """
+
+    # HTML 結構：利用 CSS 畫線
+    html = f"""
+    <div class="bracket-group">
+        <div class="group-title">{title}</div>
+        <div class="tree-structure">
+            <!-- 上層 -->
+            <div class="level-1">
+                {top_node_html}
+            </div>
+            <!-- 連接線區 -->
+            <div class="connector-lines">
+                <div class="line-vertical-top"></div>
+                <div class="line-horizontal"></div>
+                <div class="line-vertical-bottom-left"></div>
+                <div class="line-vertical-bottom-right"></div>
+            </div>
+            <!-- 下層 -->
+            <div class="level-2">
+                {bottom_nodes_html}
+            </div>
+        </div>
+    </div>
+    """
+    return html
+
+def render_all_brackets(schedule_list):
+    # 1. 篩選資料
+    # 總冠軍
+    gold_final = next((m for m in schedule_list if "總冠軍" in m['desc']), None)
+    # 4強 (勝部)
+    semi_finals = [m for m in schedule_list if "4強" in m['desc'] and "敗部" not in m['desc']]
+    
+    # 敗部冠軍
+    loser_final = next((m for m in schedule_list if "敗部冠軍" in m['desc']), None)
+    # 敗部4強
+    loser_semis = [m for m in schedule_list if "敗部4強" in m['desc']]
+    
+    # 季軍賽
+    bronze_final = next((m for m in schedule_list if "季殿" in m['desc']), None)
+    # 季軍賽的來源是4強的敗方，通常沒有獨立的 "match no"，所以這部分僅顯示樹狀結構的尾端
+    # 這裡我們傳入空 list，讓 render 函數畫出 placeholder
+    bronze_sources = [] 
+
+    # CSS 樣式表
+    css = """
+    <style>
+        .container {
+            display: flex;
+            justify-content: space-around;
+            flex-wrap: wrap;
+            font-family: sans-serif;
+            background-color: #f9f9f9;
+            padding: 20px;
+        }
+        .bracket-group {
+            background-color: white;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 15px;
+            margin: 10px;
+            min-width: 300px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        .group-title {
+            text-align: center;
+            font-weight: bold;
+            font-size: 1.2em;
+            margin-bottom: 20px;
+            color: #333;
+            border-bottom: 2px solid #eee;
+            padding-bottom: 10px;
+        }
+        .tree-structure {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .match-box {
+            border: 2px solid #FFC107; /* 黃色邊框 */
+            background-color: #FFF9C4; /* 淺黃底 */
+            padding: 8px;
+            text-align: center;
+            border-radius: 4px;
+            width: 180px;
+            position: relative;
+            z-index: 2;
+        }
+        .final-box {
+            font-weight: bold;
+            background-color: #FFF176;
+        }
+        .sub-box {
+            font-size: 0.9em;
+        }
+        .placeholder {
+            border: 2px dashed #ccc;
+            background-color: #eee;
+            color: #777;
+        }
+        .match-no { font-size: 0.8em; color: #555; margin-bottom: 2px; }
+        .match-desc { font-weight: bold; margin-bottom: 4px; }
+        .match-teams { font-size: 0.9em; }
+        
+        /* 線條魔法 */
+        .connector-lines {
+            position: relative;
+            height: 30px; /* 線條區高度 */
+            width: 100%;
+            margin-bottom: 0;
+        }
+        .line-vertical-top {
+            position: absolute;
+            left: 50%;
+            top: 0;
+            height: 15px; /* 上半段長度 */
+            width: 2px;
+            background-color: #333;
+            transform: translateX(-50%);
+        }
+        .line-horizontal {
+            position: absolute;
+            top: 15px; /* 橫線位置 = top線長度 */
+            left: 25%; /* 從左邊 1/4 處開始 */
+            width: 50%; /* 寬度佔一半 */
+            height: 2px;
+            background-color: #333;
+        }
+        /* 特別處理：如果有兩個子節點，橫線才需要。這裡簡化假設都有 */
+        
+        .line-vertical-bottom-left {
+            position: absolute;
+            top: 15px;
+            left: 25%;
+            height: 15px;
+            width: 2px;
+            background-color: #333;
+        }
+        .line-vertical-bottom-right {
+            position: absolute;
+            top: 15px;
+            right: 25%;
+            height: 15px;
+            width: 2px;
+            background-color: #333;
+        }
+
+        .level-2 {
+            display: flex;
+            justify-content: space-between;
+            width: 100%;
+            gap: 20px;
+        }
+        .child-wrapper {
+            flex: 1;
+            display: flex;
+            justify-content: center;
+        }
+    </style>
+    """
+    
+    html_content = f"""
+    {css}
+    <div class="container">
+        {render_custom_bracket(gold_final, semi_finals, "🏆 總冠軍賽程", "🥇")}
+        {render_custom_bracket(loser_final, loser_semis, "🛡️ 敗部冠軍賽程", "🛡️")}
+        {render_custom_bracket(bronze_final, bronze_sources, "🥉 季殿軍賽程", "🥉")}
+    </div>
+    """
+    
+    components.html(html_content, height=600, scrolling=True)
+
 
 # --- 側邊欄設定 ---
 st.sidebar.title("🏆 熊德盃設定面板")
@@ -146,7 +349,7 @@ def sort_matches_by_priority():
         st.session_state.matches.sort(key=get_match_priority)
 
 # --- 主畫面 ---
-st.title("🏸 熊德盃羽球比賽 賽制規劃/查詢系統 v4.5")
+st.title("🏸 熊德盃羽球比賽 賽制規劃/查詢系統 v4.6")
 
 if is_guest_mode:
     tabs = st.tabs(["賽程查詢與排程", "樹狀圖與名次"])
@@ -440,7 +643,7 @@ with tabs[schedule_tab_idx]:
         )
 
 # ==========================================
-# Tab 4: 樹狀圖與名次 (直角無箭頭版)
+# Tab 4: 樹狀圖 (HTML/CSS 客製版)
 # ==========================================
 tree_tab_idx = 1 if is_guest_mode else 3
 with tabs[tree_tab_idx]:
@@ -449,58 +652,18 @@ with tabs[tree_tab_idx]:
     if not st.session_state.schedule_list:
         st.info("請先在「排程」頁面完成排程。")
     else:
-        matches = st.session_state.schedule_list
-        winner_matches = [m for m in matches if "勝部" in m['type'] or "決賽" in m['type']]
-        loser_matches = [m for m in matches if "敗部" in m['type']]
-        
-        # --- Helper: 產生 Mermaid 語法 (無箭頭直角) ---
-        def generate_mermaid_chart(match_list, title):
-            if not match_list: return ""
-            # BT = Bottom to Top
-            md = "graph BT\n"
-            md += f"    subgraph {title}\n"
-            md += "    direction BT\n"
-            
-            # 設定連線樣式: stepAfter 創造直角, stroke-width 定義線條
-            md += "    linkStyle default interpolate stepAfter stroke-width:2px,fill:none,stroke:black;\n"
-            
-            for m in match_list:
-                node_id = f"M{m['match_no']}"
-                # 方塊樣式
-                node_label = f"Match No.{m['match_no']}<br/>{m['desc']}<br/>{m['team_a']} vs {m['team_b']}"
-                md += f'    {node_id}["{node_label}"]\n'
-                
-                # 自動連線邏輯 (使用 --- 代表無箭頭)
-                if "4強" in m['desc'] and "敗部" not in m['desc']:
-                    finals = [x for x in match_list if "總冠軍" in x['desc']]
-                    if finals: md += f"    {node_id} --- M{finals[0]['match_no']}\n"
-                
-                if "敗部4強" in m['desc']:
-                    l_finals = [x for x in match_list if "敗部冠軍" in x['desc']]
-                    if l_finals: md += f"    {node_id} --- M{l_finals[0]['match_no']}\n"
-
-            md += "    end\n"
-            return md
-
-        st.markdown("### 🥇 勝部 / 總決賽")
-        if winner_matches:
-            code = generate_mermaid_chart(winner_matches, "Winner_Bracket")
-            render_mermaid(code)
-            
-        if loser_matches:
-            st.divider()
-            st.markdown("### 🛡️ 敗部復活")
-            code_loser = generate_mermaid_chart(loser_matches, "Loser_Bracket")
-            render_mermaid(code_loser)
+        schedule_list = st.session_state.schedule_list
+        render_all_brackets(schedule_list) # 呼叫新函數
 
         st.divider()
-        st.info("👇 下方表格包含樹狀圖所需資料，可複製到 Google Sheets")
+        st.info("👇 下方表格可直接複製到 Google Sheets (填分用)")
+        
+        # 篩選出決賽/複賽資料
+        bracket_matches = [m for m in schedule_list if "決賽" in m['type'] or "複賽" in m['type']]
+        bracket_matches.sort(key=lambda x: x['match_no'])
         
         bracket_data = []
-        all_bracket_matches = winner_matches + loser_matches
-        all_bracket_matches.sort(key=lambda x: x['match_no'])
-        
-        for m in all_bracket_matches:
+        for m in bracket_matches:
             bracket_data.append({
                 "Match No.": m['match_no'],
                 "Stage": m['desc'],
@@ -508,7 +671,7 @@ with tabs[tree_tab_idx]:
                 "Score A": "",
                 "Score B": "",
                 "Team B": m['team_b'],
-                "Next Match": " (自行填寫)" # 讓使用者知道可以填下一場編號
+                "Next Match": " (自行填寫)" 
             })
         df_bracket = pd.DataFrame(bracket_data)
         st.dataframe(df_bracket, use_container_width=True)
