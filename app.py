@@ -1,5 +1,5 @@
 import streamlit as st
-import streamlit.components.v1 as components # 用來強制畫圖的元件
+import streamlit.components.v1 as components
 import pandas as pd
 import numpy as np
 import math
@@ -10,7 +10,7 @@ import re
 from datetime import datetime, timedelta, time
 
 # 設定頁面寬度
-st.set_page_config(layout="wide", page_title="熊德盃賽事規劃系統 v4.3")
+st.set_page_config(layout="wide", page_title="熊德盃賽事規劃系統 v4.4")
 
 # --- CSS 優化 ---
 st.markdown("""
@@ -52,11 +52,8 @@ def get_group_color_hex(level_name, all_levels):
     except:
         return '#FFFFFF'
 
-# --- 核心功能：強制渲染 Mermaid 樹狀圖 ---
+# --- 核心功能：強制渲染 Mermaid 樹狀圖 (直角版) ---
 def render_mermaid(code):
-    """
-    使用 HTML/JS 強制在網頁上畫出 Mermaid 圖表
-    """
     html_code = f"""
     <!DOCTYPE html>
     <html>
@@ -71,8 +68,7 @@ def render_mermaid(code):
     </body>
     </html>
     """
-    # 使用 components.html 嵌入
-    components.html(html_code, height=500, scrolling=True)
+    components.html(html_code, height=600, scrolling=True)
 
 # --- 側邊欄設定 ---
 st.sidebar.title("🏆 熊德盃設定面板")
@@ -136,7 +132,7 @@ def sort_matches_by_priority():
         st.session_state.matches.sort(key=get_match_priority)
 
 # --- 主畫面 ---
-st.title("🏸 熊德盃羽球比賽 賽制規劃/查詢系統 v4.3")
+st.title("🏸 熊德盃羽球比賽 賽制規劃/查詢系統 v4.4")
 
 if is_guest_mode:
     tabs = st.tabs(["賽程查詢與排程", "樹狀圖與名次"])
@@ -258,7 +254,7 @@ if not is_guest_mode:
             st.dataframe(df_matches, use_container_width=True)
 
 # ==========================================
-# Tab 3: 排程 (賽程大表 - 編號邏輯修正)
+# Tab 3: 排程 (賽程大表)
 # ==========================================
 schedule_tab_idx = 0 if is_guest_mode else 2
 with tabs[schedule_tab_idx]:
@@ -285,10 +281,8 @@ with tabs[schedule_tab_idx]:
             else:
                 sort_matches_by_priority()
                 
-                # --- 排程演算法 ---
                 schedule_grid = [["" for _ in range(num_courts)] for _ in range(slots_count)]
                 grid_meta = [[None for _ in range(num_courts)] for _ in range(slots_count)]
-                
                 match_queue = st.session_state.matches.copy()
                 team_busy_until = {} 
                 scheduled_matches_list = []
@@ -317,7 +311,6 @@ with tabs[schedule_tab_idx]:
                             match = match_queue.pop(found_match_idx)
                             end_row = row + points_per_matchup
                             
-                            # 標記格子
                             for r in range(row, end_row):
                                 schedule_grid[r][col] = "OCCUPIED"
                                 grid_meta[r][col] = match
@@ -328,7 +321,6 @@ with tabs[schedule_tab_idx]:
                             if match_queue:
                                 min_p = min(get_match_priority(m) for m in match_queue)
 
-                # --- 生成場次編號 ---
                 global_match_counter = 1
                 final_schedule_grid = [["" for _ in range(num_courts)] for _ in range(slots_count)]
                 
@@ -345,7 +337,6 @@ with tabs[schedule_tab_idx]:
                             
                             if is_head:
                                 cell_text = f"No.{current_no}\n{match_info['team_a']}\nvs\n{match_info['team_b']}\n({match_info['level']})"
-                                # 記錄代表編號給樹狀圖用
                                 if 'start_no' not in match_info:
                                     match_info['start_no'] = current_no
                             else:
@@ -353,7 +344,6 @@ with tabs[schedule_tab_idx]:
                             
                             final_schedule_grid[row][col] = cell_text
                             
-                            # 收集匯出清單
                             if is_head:
                                 export_item = match_info.copy()
                                 export_item['match_no'] = current_no
@@ -374,7 +364,6 @@ with tabs[schedule_tab_idx]:
                 else:
                     st.success("✅ 賽程大表生成完畢！")
 
-    # 顯示
     if st.session_state.schedule is not None:
         st.divider()
         all_match_levels = []
@@ -437,7 +426,7 @@ with tabs[schedule_tab_idx]:
         )
 
 # ==========================================
-# Tab 4: 樹狀圖與名次 (強制圖片化)
+# Tab 4: 樹狀圖與名次 (直角化升級)
 # ==========================================
 tree_tab_idx = 1 if is_guest_mode else 3
 with tabs[tree_tab_idx]:
@@ -447,28 +436,27 @@ with tabs[tree_tab_idx]:
         st.info("請先在「排程」頁面完成排程。")
     else:
         matches = st.session_state.schedule_list
-        # 這裡只取複賽/決賽
         winner_matches = [m for m in matches if "勝部" in m['type'] or "決賽" in m['type']]
         loser_matches = [m for m in matches if "敗部" in m['type']]
         
-        # --- Helper: 產生 Mermaid 語法 ---
+        # --- Helper: 產生 Mermaid 語法 (直角版) ---
         def generate_mermaid_chart(match_list, title):
             if not match_list: return ""
-            md = f"graph LR\n"
+            # 設定為 BT (Bottom to Top) 由下往上
+            md = "%%{init: {'flowchart': {'curve': 'stepAfter'}}}%%\n"
+            md += f"graph BT\n"
             md += f"    subgraph {title}\n"
-            md += "    direction LR\n"
+            md += "    direction BT\n"
             
             for m in match_list:
                 node_id = f"M{m['match_no']}"
-                # 為了避免 Mermaid 解析錯誤，把特殊符號拿掉
                 desc_safe = re.sub(r'[^\w\s]', '', m['desc'])
-                team_a_safe = re.sub(r'[^\w\s]', '', m['team_a'])
-                team_b_safe = re.sub(r'[^\w\s]', '', m['team_b'])
                 
-                node_label = f"No.{m['match_no']}<br/>{m['desc']}<br/>{m['team_a']} vs {m['team_b']}"
+                # 節點樣式: 方塊
+                node_label = f"Match No.{m['match_no']}<br/>{m['desc']}<br/>{m['team_a']} vs {m['team_b']}"
                 md += f'    {node_id}["{node_label}"]\n'
                 
-                # 自動連線邏輯
+                # 自動連線邏輯 (下層 -> 上層)
                 if "4強" in m['desc'] and "敗部" not in m['desc']:
                     finals = [x for x in match_list if "總冠軍" in x['desc']]
                     if finals: md += f"    {node_id} --> M{finals[0]['match_no']}\n"
@@ -480,13 +468,11 @@ with tabs[tree_tab_idx]:
             md += "    end\n"
             return md
 
-        # 顯示勝部樹狀圖
         st.markdown("### 🥇 勝部 / 總決賽")
         if winner_matches:
             code = generate_mermaid_chart(winner_matches, "Winner_Bracket")
             render_mermaid(code)
             
-        # 顯示敗部樹狀圖
         if loser_matches:
             st.divider()
             st.markdown("### 🛡️ 敗部復活")
