@@ -10,7 +10,7 @@ import re
 from datetime import datetime, timedelta, time
 
 # 設定頁面寬度
-st.set_page_config(layout="wide", page_title="熊德盃賽事規劃系統 v4.4")
+st.set_page_config(layout="wide", page_title="熊德盃賽事規劃系統 v4.5")
 
 # --- CSS 優化 ---
 st.markdown("""
@@ -52,18 +52,32 @@ def get_group_color_hex(level_name, all_levels):
     except:
         return '#FFFFFF'
 
-# --- 核心功能：強制渲染 Mermaid 樹狀圖 (直角版) ---
+# --- 核心功能：強制渲染 Mermaid 樹狀圖 (直角+無箭頭版) ---
 def render_mermaid(code):
     html_code = f"""
     <!DOCTYPE html>
     <html>
     <body>
-        <pre class="mermaid">
+        <div class="mermaid">
             {code}
-        </pre>
+        </div>
         <script type="module">
             import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
-            mermaid.initialize({{ startOnLoad: true }});
+            mermaid.initialize({{ 
+                startOnLoad: true,
+                flowchart: {{ 
+                    curve: 'stepAfter', 
+                    padding: 20,
+                    nodeSpacing: 50,
+                    rankSpacing: 50
+                }},
+                theme: 'base',
+                themeVariables: {{
+                    lineColor: '#000000',
+                    mainBkg: '#FFF9C4',
+                    edgeLabelBackground: '#ffffff'
+                }}
+            }});
         </script>
     </body>
     </html>
@@ -132,7 +146,7 @@ def sort_matches_by_priority():
         st.session_state.matches.sort(key=get_match_priority)
 
 # --- 主畫面 ---
-st.title("🏸 熊德盃羽球比賽 賽制規劃/查詢系統 v4.4")
+st.title("🏸 熊德盃羽球比賽 賽制規劃/查詢系統 v4.5")
 
 if is_guest_mode:
     tabs = st.tabs(["賽程查詢與排程", "樹狀圖與名次"])
@@ -426,7 +440,7 @@ with tabs[schedule_tab_idx]:
         )
 
 # ==========================================
-# Tab 4: 樹狀圖與名次 (直角化升級)
+# Tab 4: 樹狀圖與名次 (直角無箭頭版)
 # ==========================================
 tree_tab_idx = 1 if is_guest_mode else 3
 with tabs[tree_tab_idx]:
@@ -439,31 +453,31 @@ with tabs[tree_tab_idx]:
         winner_matches = [m for m in matches if "勝部" in m['type'] or "決賽" in m['type']]
         loser_matches = [m for m in matches if "敗部" in m['type']]
         
-        # --- Helper: 產生 Mermaid 語法 (直角版) ---
+        # --- Helper: 產生 Mermaid 語法 (無箭頭直角) ---
         def generate_mermaid_chart(match_list, title):
             if not match_list: return ""
-            # 設定為 BT (Bottom to Top) 由下往上
-            md = "%%{init: {'flowchart': {'curve': 'stepAfter'}}}%%\n"
-            md += f"graph BT\n"
+            # BT = Bottom to Top
+            md = "graph BT\n"
             md += f"    subgraph {title}\n"
             md += "    direction BT\n"
             
+            # 設定連線樣式: stepAfter 創造直角, stroke-width 定義線條
+            md += "    linkStyle default interpolate stepAfter stroke-width:2px,fill:none,stroke:black;\n"
+            
             for m in match_list:
                 node_id = f"M{m['match_no']}"
-                desc_safe = re.sub(r'[^\w\s]', '', m['desc'])
-                
-                # 節點樣式: 方塊
+                # 方塊樣式
                 node_label = f"Match No.{m['match_no']}<br/>{m['desc']}<br/>{m['team_a']} vs {m['team_b']}"
                 md += f'    {node_id}["{node_label}"]\n'
                 
-                # 自動連線邏輯 (下層 -> 上層)
+                # 自動連線邏輯 (使用 --- 代表無箭頭)
                 if "4強" in m['desc'] and "敗部" not in m['desc']:
                     finals = [x for x in match_list if "總冠軍" in x['desc']]
-                    if finals: md += f"    {node_id} --> M{finals[0]['match_no']}\n"
+                    if finals: md += f"    {node_id} --- M{finals[0]['match_no']}\n"
                 
                 if "敗部4強" in m['desc']:
                     l_finals = [x for x in match_list if "敗部冠軍" in x['desc']]
-                    if l_finals: md += f"    {node_id} --> M{l_finals[0]['match_no']}\n"
+                    if l_finals: md += f"    {node_id} --- M{l_finals[0]['match_no']}\n"
 
             md += "    end\n"
             return md
@@ -480,7 +494,7 @@ with tabs[tree_tab_idx]:
             render_mermaid(code_loser)
 
         st.divider()
-        st.info("👇 下方表格可直接複製到 Google Sheets (填分用)")
+        st.info("👇 下方表格包含樹狀圖所需資料，可複製到 Google Sheets")
         
         bracket_data = []
         all_bracket_matches = winner_matches + loser_matches
@@ -493,7 +507,8 @@ with tabs[tree_tab_idx]:
                 "Team A": m['team_a'],
                 "Score A": "",
                 "Score B": "",
-                "Team B": m['team_b']
+                "Team B": m['team_b'],
+                "Next Match": " (自行填寫)" # 讓使用者知道可以填下一場編號
             })
         df_bracket = pd.DataFrame(bracket_data)
         st.dataframe(df_bracket, use_container_width=True)
