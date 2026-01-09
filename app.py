@@ -7,10 +7,9 @@ import json
 import io
 import re
 from datetime import datetime, timedelta, time
-import graphviz
 
 # 設定頁面寬度
-st.set_page_config(layout="wide", page_title="熊德盃賽事規劃系統 v4.1 (修復版)")
+st.set_page_config(layout="wide", page_title="熊德盃賽事規劃系統 v4.2")
 
 # --- CSS 優化 ---
 st.markdown("""
@@ -39,15 +38,11 @@ COLOR_PALETTE = [
 ]
 
 def get_group_color_hex(level_name, all_levels):
-    """取得組別顏色"""
     try:
-        # 特殊組別固定色
-        if "決賽" in level_name or "總冠軍" in level_name: return '#FF8A80' # 深紅
-        if "季殿" in level_name: return '#FFD180' # 深橘
-        if "敗部" in level_name: return '#EA80FC' # 深紫
+        if "決賽" in level_name or "總冠軍" in level_name: return '#FF8A80'
+        if "季殿" in level_name: return '#FFD180'
+        if "敗部" in level_name: return '#EA80FC'
         
-        # 一般分組輪替色
-        # 過濾掉特殊組別，只留 A組, B組...
         normal_levels = [l for l in all_levels if "決賽" not in l and "敗部" not in l]
         if level_name in normal_levels:
             idx = normal_levels.index(level_name) % len(COLOR_PALETTE)
@@ -72,7 +67,7 @@ with st.sidebar.expander("1. 時間與場地設定", expanded=not is_guest_mode)
     points_per_matchup = st.number_input("每場對戰打幾點?", 1, 7, 5)
     
     total_matchup_duration = mins_per_point * points_per_matchup
-    st.info(f"ℹ️ 一場對戰佔用: {total_matchup_duration} 分鐘")
+    st.info(f"ℹ️ 一場對戰佔用: {total_matchup_duration} 分鐘 ({points_per_matchup} 格)")
 
 if not is_guest_mode:
     with st.sidebar.expander("2. 費用與資源估算"):
@@ -118,7 +113,7 @@ def sort_matches_by_priority():
         st.session_state.matches.sort(key=get_match_priority)
 
 # --- 主畫面 ---
-st.title("🏸 熊德盃羽球比賽 賽制規劃/查詢系統 v4.1")
+st.title("🏸 熊德盃羽球比賽 賽制規劃/查詢系統 v4.2")
 
 if is_guest_mode:
     tabs = st.tabs(["賽程查詢與排程", "樹狀圖與名次"])
@@ -240,7 +235,7 @@ if not is_guest_mode:
             st.dataframe(df_matches, use_container_width=True)
 
 # ==========================================
-# Tab 3: 排程 (賽程大表 - 修復版)
+# Tab 3: 排程 (賽程大表 - 編號邏輯修正)
 # ==========================================
 schedule_tab_idx = 0 if is_guest_mode else 2
 with tabs[schedule_tab_idx]:
@@ -253,9 +248,7 @@ with tabs[schedule_tab_idx]:
     total_play_minutes = (play_end - play_start).total_seconds() / 60
     slots_count = int(total_play_minutes // mins_per_point)
     
-    st.markdown(f"**說明**：不同底色代表不同分組，數字為唯一場次編號 (Match No.)")
-    
-    # 準備搜尋框
+    # 搜尋框
     c_filter, _ = st.columns([2, 2])
     with c_filter:
         team_list = ["無"] + [t['name'] for t in st.session_state.teams]
@@ -269,15 +262,17 @@ with tabs[schedule_tab_idx]:
             else:
                 sort_matches_by_priority()
                 
+                # --- 排程演算法 ---
                 schedule_grid = [["" for _ in range(num_courts)] for _ in range(slots_count)]
+                # 用於暫存每一格的內容物件，以便最後生成編號
+                grid_meta = [[None for _ in range(num_courts)] for _ in range(slots_count)]
+                
                 match_queue = st.session_state.matches.copy()
                 team_busy_until = {} 
                 scheduled_matches_list = []
-                global_match_counter = 1
 
                 for row in range(slots_count):
                     if row + points_per_matchup > slots_count: break
-                    
                     if match_queue:
                          match_queue.sort(key=get_match_priority)
                          min_p = min(get_match_priority(m) for m in match_queue)
@@ -289,41 +284,70 @@ with tabs[schedule_tab_idx]:
                         if schedule_grid[row][col] != "": continue
                             
                         found_match_idx = -1
-                        
                         for idx, match in enumerate(match_queue):
                             if get_match_priority(match) > min_p: continue
-                            
                             ta, tb = match['team_a'], match['team_b']
-                            is_ta_busy = row < team_busy_until.get(ta, -1)
-                            is_tb_busy = row < team_busy_until.get(tb, -1)
-                            
-                            if not is_ta_busy and not is_tb_busy:
+                            if not (row < team_busy_until.get(ta, -1) or row < team_busy_until.get(tb, -1)):
                                 found_match_idx = idx
                                 break
                         
                         if found_match_idx != -1:
                             match = match_queue.pop(found_match_idx)
-                            current_match_no = global_match_counter
-                            global_match_counter += 1
                             end_row = row + points_per_matchup
                             
-                            # 把組別資訊寫入格子，讓後續 style function 可以讀取
-                            # 格式: No.1\nTeamA\nvs\nTeamB\n(A組 循環賽)
-                            info_text = f"No.{current_match_no}\n{match['team_a']}\nvs\n{match['team_b']}\n({match['level']} - {match['desc']})"
-                            
-                            schedule_grid[row][col] = info_text
-                            for r in range(row + 1, end_row):
-                                schedule_grid[r][col] = f"No.{current_match_no} ..."
+                            # 標記格子
+                            for r in range(row, end_row):
+                                schedule_grid[r][col] = "OCCUPIED" # 暫時佔位
+                                grid_meta[r][col] = match # 存入比賽資訊
                             
                             team_busy_until[match['team_a']] = end_row
                             team_busy_until[match['team_b']] = end_row
                             
-                            match['match_no'] = current_match_no
-                            match['time'] = (play_start + timedelta(minutes=row*mins_per_point)).strftime("%H:%M")
-                            scheduled_matches_list.append(match)
-                            
                             if match_queue:
                                 min_p = min(get_match_priority(m) for m in match_queue)
+
+                # --- 第二階段：生成場次編號 (Match No. 1, 2, 3...) ---
+                # 由左至右 (Time 相同)，由上至下 (Time 增加)
+                # 對應到 Grid 是：先遍歷 row，再遍歷 col
+                
+                global_match_counter = 1
+                final_schedule_grid = [["" for _ in range(num_courts)] for _ in range(slots_count)]
+                
+                for row in range(slots_count):
+                    for col in range(num_courts):
+                        match_info = grid_meta[row][col]
+                        if match_info:
+                            # 賦予編號
+                            current_no = global_match_counter
+                            global_match_counter += 1
+                            
+                            # 判斷是否為該場對戰的第一格 (Head)
+                            # 檢查上一格 (row-1) 是否是同一場比賽
+                            is_head = False
+                            if row == 0:
+                                is_head = True
+                            elif grid_meta[row-1][col] != match_info:
+                                is_head = True
+                            
+                            if is_head:
+                                # 顯示完整資訊
+                                cell_text = f"No.{current_no}\n{match_info['team_a']}\nvs\n{match_info['team_b']}\n({match_info['level']})"
+                                # 將此編號記錄回 match_info，只記錄第一點的編號作為代表 (或是存 list)
+                                if 'start_no' not in match_info:
+                                    match_info['start_no'] = current_no
+                            else:
+                                # 顯示簡略資訊 (第2-5點)
+                                cell_text = f"No.{current_no} ..."
+                            
+                            final_schedule_grid[row][col] = cell_text
+                            
+                            # 收集匯出清單 (只在 Head 收集一次，或者每點都收?)
+                            # 為了樹狀圖，我們通常只需要「對戰組合」的一個代表編號
+                            if is_head:
+                                export_item = match_info.copy()
+                                export_item['match_no'] = current_no # 這是該對戰的第一點編號
+                                export_item['time'] = (play_start + timedelta(minutes=row*mins_per_point)).strftime("%H:%M")
+                                scheduled_matches_list.append(export_item)
 
                 time_labels = []
                 for i in range(slots_count):
@@ -331,7 +355,7 @@ with tabs[schedule_tab_idx]:
                     time_labels.append(t.strftime("%H:%M"))
                 col_labels = [f"Court {i+1}" for i in range(num_courts)]
                 
-                st.session_state.schedule = pd.DataFrame(schedule_grid, index=time_labels, columns=col_labels)
+                st.session_state.schedule = pd.DataFrame(final_schedule_grid, index=time_labels, columns=col_labels)
                 st.session_state.schedule_list = scheduled_matches_list
                 
                 if match_queue:
@@ -339,42 +363,28 @@ with tabs[schedule_tab_idx]:
                 else:
                     st.success("✅ 賽程大表生成完畢！")
 
-    # 顯示賽程大表 (使用 applymap 解決 ValueError)
+    # 顯示
     if st.session_state.schedule is not None:
         st.divider()
-        
-        # 準備顏色列表供 Style Function 使用
         all_match_levels = []
         if st.session_state.schedule_list:
             all_match_levels = sorted(list(set(m['level'] for m in st.session_state.schedule_list)))
 
-        # 核心 Style Function
         def style_schedule_cells(val):
             val_str = str(val)
             if not val_str: return ''
-            
-            # 1. 搜尋高亮 (最高優先)
             if filter_team != "無" and filter_team in val_str:
                 return 'background-color: #ffeb3b; color: black; font-weight: bold; border: 2px solid red;'
-            
-            # 2. 進行中灰色
             if "..." in val_str:
-                 # 嘗試從 No.X 找回原本的顏色有點複雜，這裡簡化處理
-                 # 如果想要跟隨主格子顏色，需要解析 No.X
-                 # 這裡先用簡單的灰色，保持整潔
                  return 'background-color: #f5f5f5; color: #aaa;'
 
-            # 3. 根據文字內容決定背景色
-            # 嘗試解析括號內的組別: (A組 - ...)
             bg_color = '#FFFFFF'
             try:
-                # 簡易解析
                 if "總冠軍" in val_str: bg_color = '#FF8A80'
                 elif "季殿" in val_str: bg_color = '#FFD180'
                 elif "敗部" in val_str: bg_color = '#EA80FC'
                 elif "決賽" in val_str: bg_color = '#FF8A80'
                 else:
-                    # 尋找組別關鍵字
                     found_level = None
                     for lvl in all_match_levels:
                         if lvl in val_str:
@@ -384,10 +394,8 @@ with tabs[schedule_tab_idx]:
                         bg_color = get_group_color_hex(found_level, all_match_levels)
             except:
                 pass
-                
             return f'background-color: {bg_color}; color: black;'
 
-        # 顯示圖例
         st.write("🎨 **組別色碼圖例**：")
         cols = st.columns(8)
         legend_levels = [l for l in all_match_levels if "決賽" not in l and "敗部" not in l]
@@ -396,14 +404,12 @@ with tabs[schedule_tab_idx]:
             cols[i % 8].markdown(f"<div style='background-color:{c};padding:5px;border-radius:5px;text-align:center'>{level}</div>", unsafe_allow_html=True)
         st.write("")
 
-        # 渲染表格
         st.dataframe(
             st.session_state.schedule.style.applymap(style_schedule_cells),
             height=800,
             use_container_width=True
         )
         
-        # 下載 Excel
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
             st.session_state.schedule.to_excel(writer, sheet_name='賽程大表')
@@ -420,7 +426,7 @@ with tabs[schedule_tab_idx]:
         )
 
 # ==========================================
-# Tab 4: 樹狀圖與名次
+# Tab 4: 樹狀圖與名次 (Mermaid 升級版)
 # ==========================================
 tree_tab_idx = 1 if is_guest_mode else 3
 with tabs[tree_tab_idx]:
@@ -430,26 +436,67 @@ with tabs[tree_tab_idx]:
         st.info("請先在「排程」頁面完成排程。")
     else:
         matches = st.session_state.schedule_list
-        winner_bracket = [m for m in matches if "勝部" in m['type'] or "決賽" in m['type']]
-        loser_bracket = [m for m in matches if "敗部" in m['type']]
+        # 這裡只取複賽/決賽
+        winner_matches = [m for m in matches if "勝部" in m['type'] or "決賽" in m['type']]
+        loser_matches = [m for m in matches if "敗部" in m['type']]
         
-        st.markdown("### 🥇 勝部 / 總決賽樹狀圖")
-        graph = graphviz.Digraph()
-        graph.attr(rankdir='LR')
-        
-        for m in winner_bracket:
-            label = f"Match {m['match_no']}\n{m['desc']}\n({m['team_a']} vs {m['team_b']})"
-            graph.node(str(m['match_no']), label, shape='box', style='filled', fillcolor='#FFF176')
+        # --- Helper: 產生 Mermaid 語法 ---
+        def generate_mermaid_chart(match_list, title):
+            if not match_list: return ""
             
-        try:
-             st.graphviz_chart(graph)
-        except:
-             st.warning("無法渲染圖形，請參考下方表格。")
+            # Mermaid 語法開頭
+            md = f"graph LR\n"
+            md += f"    subgraph {title}\n"
+            md += "    direction LR\n"
+            
+            # 建立節點
+            for m in match_list:
+                node_id = f"M{m['match_no']}"
+                # 節點顯示文字: No.123\nTeamA vs TeamB
+                node_label = f"Match {m['match_no']}<br/>{m['desc']}<br/>{m['team_a']} vs {m['team_b']}"
+                md += f'    {node_id}["{node_label}"]\n'
+                
+                # 嘗試建立連線 (簡易邏輯：依照 desc 猜測)
+                # 例如：4強賽 -> 總冠軍賽
+                if "4強" in m['desc'] and "敗部" not in m['desc']:
+                    # 找總冠軍賽
+                    finals = [x for x in match_list if "總冠軍" in x['desc']]
+                    if finals:
+                        final_id = f"M{finals[0]['match_no']}"
+                        md += f"    {node_id} --> {final_id}\n"
+                
+                if "敗部4強" in m['desc']:
+                    l_finals = [x for x in match_list if "敗部冠軍" in x['desc']]
+                    if l_finals:
+                        l_id = f"M{l_finals[0]['match_no']}"
+                        md += f"    {node_id} --> {l_id}\n"
 
-        st.info("👇 下方表格可直接複製到 Google Sheets")
+            md += "    end\n"
+            return md
+
+        # 顯示勝部樹狀圖
+        st.markdown("### 🥇 勝部 / 總決賽")
+        if winner_matches:
+            mermaid_code = generate_mermaid_chart(winner_matches, "Winner_Bracket")
+            st.markdown(f"```mermaid\n{mermaid_code}\n```", unsafe_allow_html=True) # 本地渲染可能需要 plugin，但 Streamlit Cloud 支援
+            # 備用：純文字表格
+            
+        # 顯示敗部樹狀圖
+        if loser_matches:
+            st.divider()
+            st.markdown("### 🛡️ 敗部復活")
+            mermaid_code_loser = generate_mermaid_chart(loser_matches, "Loser_Bracket")
+            st.markdown(f"```mermaid\n{mermaid_code_loser}\n```", unsafe_allow_html=True)
+
+        st.divider()
+        st.info("👇 下方表格可直接複製到 Google Sheets (填分用)")
         
         bracket_data = []
-        for m in winner_bracket:
+        # 合併顯示
+        all_bracket_matches = winner_matches + loser_matches
+        all_bracket_matches.sort(key=lambda x: x['match_no'])
+        
+        for m in all_bracket_matches:
             bracket_data.append({
                 "Match No.": m['match_no'],
                 "Stage": m['desc'],
@@ -458,33 +505,15 @@ with tabs[tree_tab_idx]:
                 "Score B": "",
                 "Team B": m['team_b']
             })
-        df_winner = pd.DataFrame(bracket_data)
-        st.dataframe(df_winner, use_container_width=True)
-        
-        if loser_bracket:
-            st.divider()
-            st.markdown("### 🛡️ 敗部復活樹狀圖")
-            loser_data = []
-            for m in loser_bracket:
-                loser_data.append({
-                    "Match No.": m['match_no'],
-                    "Stage": m['desc'],
-                    "Team A": m['team_a'],
-                    "Score A": "",
-                    "Score B": "",
-                    "Team B": m['team_b']
-                })
-            df_loser = pd.DataFrame(loser_data)
-            st.dataframe(df_loser, use_container_width=True)
+        df_bracket = pd.DataFrame(bracket_data)
+        st.dataframe(df_bracket, use_container_width=True)
 
         buffer_bracket = io.BytesIO()
         with pd.ExcelWriter(buffer_bracket, engine='openpyxl') as writer:
-            df_winner.to_excel(writer, sheet_name='勝部樹狀圖表格', index=False)
-            if loser_bracket:
-                df_loser.to_excel(writer, sheet_name='敗部樹狀圖表格', index=False)
+            df_bracket.to_excel(writer, sheet_name='樹狀圖填分表', index=False)
                 
         st.download_button(
-            label="📥 下載樹狀圖填分表 (Excel)",
+            label="📥 下載填分表 (Excel)",
             data=buffer_bracket.getvalue(),
             file_name="tournament_brackets.xlsx",
             mime="application/vnd.ms-excel"
